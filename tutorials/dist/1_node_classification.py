@@ -20,17 +20,17 @@ Here we store the node labels as node data in the DGL Graph.
 
 
 .. code-block:: python
+'''
 
+import dgl
+import torch as th
+from ogb.nodeproppred import DglNodePropPredDataset
+data = DglNodePropPredDataset(name='ogbn-products')
+graph, labels = data[0]
+labels = labels[:, 0]
+graph.ndata['labels'] = labels
 
-    import dgl
-    import torch as th
-    from ogb.nodeproppred import DglNodePropPredDataset
-    data = DglNodePropPredDataset(name='ogbn-products')
-    graph, labels = data[0]
-    labels = labels[:, 0]
-    graph.ndata['labels'] = labels
-
-
+'''
 We need to split the data into training/validation/test set during the graph partitioning.
 Because this is a node classification task, the training/validation/test sets contain node IDs.
 We recommend users to convert them as boolean arrays, in which True indicates the existence

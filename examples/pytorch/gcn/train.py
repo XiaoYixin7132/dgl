@@ -1,4 +1,5 @@
 import argparse
+import profile
 
 import torch
 import torch.nn as nn
@@ -19,6 +20,7 @@ class GCN(nn.Module):
             dglnn.GraphConv(in_size, hid_size, activation=F.relu)
         )
         self.layers.append(dglnn.GraphConv(hid_size, out_size))
+        # with torch.profiler.record_function("dropout"):
         self.dropout = nn.Dropout(0.5)
 
     def forward(self, g, features):
@@ -49,9 +51,22 @@ def train(g, features, labels, masks, model):
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-2, weight_decay=5e-4)
 
     # training loop
-    for epoch in range(200):
+    prof = torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.CUDA,
+        ],
+        # schedule=torch.profiler.schedule(wait=1, warmup=1, active=2),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler('./log/gcn'),
+        record_shapes=True,
+        with_stack=True,
+        profile_memory=True
+    )
+    prof.start()
+    for epoch in range(30):
         model.train()
-        logits = model(g, features)
+        with torch.profiler.record_function("Forward Computation"):
+            logits = model(g, features)
         loss = loss_fcn(logits[train_mask], labels[train_mask])
         optimizer.zero_grad()
         loss.backward()
@@ -62,7 +77,8 @@ def train(g, features, labels, masks, model):
                 epoch, loss.item(), acc
             )
         )
-
+        prof.step()
+    prof.stop()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -89,6 +105,7 @@ if __name__ == "__main__":
         raise ValueError("Unknown dataset: {}".format(args.dataset))
     g = data[0]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.cuda.set_device(3)
     g = g.int().to(device)
     features = g.ndata["feat"]
     labels = g.ndata["label"]

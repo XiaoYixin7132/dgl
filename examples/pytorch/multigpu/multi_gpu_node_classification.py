@@ -205,7 +205,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--gpu",
         type=str,
-        default="0",
+        default="0, 1, 2, 3",
         help="GPU(s) in use. Can be a list of gpu ids for multi-gpu training,"
         " e.g., 0,1,2,3.",
     )
@@ -219,7 +219,8 @@ if __name__ == "__main__":
 
     # load and preprocess dataset
     print("Loading data")
-    dataset = AsNodePredDataset(DglNodePropPredDataset("ogbn-products"))
+    # dataset = AsNodePredDataset(DglNodePropPredDataset("ogbn-products"))
+    dataset = AsNodePredDataset(DglNodePropPredDataset("ogbn-arxiv"))
     g = dataset[0]
     # avoid creating certain graph formats in each sub-process to save momory
     g.create_formats_()

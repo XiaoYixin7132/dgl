@@ -219,6 +219,7 @@ def create_history_storage(g, args, n_classes):
         g.ndata["hist_%d" % (l + 1)] = th.zeros(
             g.number_of_nodes(), dim
         ).share_memory_()
+        print(g.ndata["hist_%d" % (l + 1)].is_cuda)
 
 
 def init_history(g, model, dev_id, batch_size):
@@ -228,7 +229,8 @@ def init_history(g, model, dev_id, batch_size):
         )  # replaces hist_i features in-place
 
 
-def update_history(g, blocks):
+def update_history(g, blocks, proc_id):
+    print(proc_id)
     with th.no_grad():
         for i, block in enumerate(blocks):
             ids = block.dstdata[dgl.NID].cpu()
@@ -331,7 +333,8 @@ def run(proc_id, n_gpus, args, devices, data):
             # forward
             batch_pred = model(blocks)
             # update history
-            update_history(g, blocks)
+            # TODO: Will multi-process write-conflict happen here?
+            update_history(g, blocks, proc_id)
             # compute loss
             batch_labels = blocks[-1].dstdata["label"]
             loss = loss_fcn(batch_pred, batch_labels)
@@ -341,6 +344,7 @@ def run(proc_id, n_gpus, args, devices, data):
             optimizer.step()
             if proc_id == 0:
                 iter_tput.append(len(seeds) * n_gpus / (time.time() - tic_step))
+                print("-----------------------")
             if step % args.log_every == 0 and proc_id == 0:
                 acc = compute_acc(batch_pred, batch_labels)
                 print(
@@ -381,11 +385,11 @@ def run(proc_id, n_gpus, args, devices, data):
 
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser("multi-gpu training")
-    argparser.add_argument("--gpu", type=str, default="0")
+    argparser.add_argument("--gpu", type=str, default="0,1,2,3")
     argparser.add_argument("--num-epochs", type=int, default=20)
     argparser.add_argument("--num-hidden", type=int, default=16)
     argparser.add_argument("--num-layers", type=int, default=2)
-    argparser.add_argument("--fan-out", type=str, default="1,1")
+    argparser.add_argument("--fan-out", type=str, default="2,2")
     argparser.add_argument("--batch-size", type=int, default=1000)
     argparser.add_argument("--val-batch-size", type=int, default=1000)
     argparser.add_argument("--log-every", type=int, default=20)
