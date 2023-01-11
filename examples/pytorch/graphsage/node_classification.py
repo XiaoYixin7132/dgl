@@ -17,7 +17,7 @@ class SAGE(nn.Module):
         # three-layer GraphSAGE-mean
         self.layers.append(dglnn.SAGEConv(in_size, hid_size, 'mean'))
         self.layers.append(dglnn.SAGEConv(hid_size, hid_size, 'mean'))
-        # self.layers.append(dglnn.SAGEConv(hid_size, out_size, 'mean'))
+        self.layers.append(dglnn.SAGEConv(hid_size, out_size, 'mean'))
         self.dropout = nn.Dropout(0.5)
         self.hid_size = hid_size
         self.out_size = out_size
