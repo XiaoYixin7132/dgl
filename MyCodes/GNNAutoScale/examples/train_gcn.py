@@ -25,7 +25,11 @@ from torch.profiler import record_function
 
 from torch.utils.tensorboard import SummaryWriter
 
-writer = SummaryWriter('/home/lihz/Codes/dgl/MyCodes/Profiling/GNNAutoScale/tensorboard/dgl-metis-MeanAgg')
+METIS_PARTITION = False
+DEBUG = True
+SHULFFLE_DATA = False
+
+writer = SummaryWriter('/home/lihz/Codes/dgl/MyCodes/Profiling/GNNAutoScale/tensorboard/dgl-metis-GraphConv')
 torch.manual_seed(12345)
 class GlobalIterater(object):
     def __init__(self):
@@ -56,12 +60,25 @@ prof.schedule = torch.profiler.schedule(
         repeat=2
         )
 
-# load and preprocess dataset
-transform = (
-    AddSelfLoop()
-)  # by default, it will first remove self-loops to prevent duplication
-data = CoraGraphDataset(transform=transform)
-g = data[0]
+if DEBUG:
+    g = dgl.DGLGraph()
+    g.add_nodes(5)
+    g.add_edges([0, 0, 2, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5, 5], 
+                [1, 2, 3, 0, 2, 3, 0, 1, 3, 4, 1, 2, 4, 5, 2, 3, 5, 4, 4])
+    g.ndata['feat'] = torch.randn(6, 4)
+else:
+    # load and preprocess dataset
+    transform = (
+        AddSelfLoop()
+    )  # by default, it will first remove self-loops to prevent duplication
+    data = CoraGraphDataset(transform=transform)
+    g = data[0]
+    in_size = g.ndata['feat'].shape[1]
+    out_size = data.num_classes
+    train_mask = g.ndata['train_mask']
+    train_ids = train_mask.nonzero().squeeze()
+    val_mask = g.ndata["val_mask"]
+    labels = g.ndata["label"]
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--device', type=int, default=0)
@@ -72,43 +89,37 @@ device = f'cuda:{args.device}' if torch.cuda.is_available() else 'cpu'
 
 
 # 由metis或者顺序划分得到多个节点区间后，一次训练选择多少个节点区间
-num_partitions_per_it = 10
+num_partitions_per_it = 1
 
 num_layers = 3
 
-# Pre-partition the graph using Metis:
-# perm, ptr = metis(data.adj_t, num_parts=40, log=True)
-# data = permute(data, perm, log=True)
-
-# Metis Partition
-num_parts = 40
-part_dict = dgl.metis_partition(g, num_parts, reshuffle=True, balance_ntypes=g.ndata['train_mask'])
-batches = [part_dict[i].ndata[dgl.NID] for i in range(num_parts)]
-original_ids = [part_dict[i].ndata['orig_id'] for i in range(num_parts)]
-new_order = torch.cat(original_ids, dim=0)
-subgraph_list = [_ for _ in part_dict.values()]
-g = dgl.reorder_graph(g, node_permute_algo='custom', permute_config={'nodes_perm': new_order})
-
-in_size = g.ndata['feat'].shape[1]
-out_size = data.num_classes
-train_mask = g.ndata['train_mask']
-train_ids = train_mask.nonzero().squeeze()
-val_mask = g.ndata["val_mask"]
-labels = g.ndata["label"]
-
-# sys.exit()
-# Sequantial Partition
-# num_nodes = g.num_nodes()
-# # 每个partition内部的节点数量
-# num_nodes_per_part = 68
-# id_seq = torch.arange(num_nodes)
-# # batches是一个batch list，每一个batch相当于一个partition
-# batches = torch.split(id_seq, num_nodes_per_part)
+if METIS_PARTITION:
+    # Metis Partition
+    num_parts = 500
+    part_dict = dgl.metis_partition(g, num_parts, reshuffle=True, 
+    # balance_ntypes=g.ndata['train_mask']
+    )
+    batches = [part_dict[i].ndata[dgl.NID] for i in range(num_parts)]
+    original_ids = [part_dict[i].ndata['orig_id'] for i in range(num_parts)]
+    new_order = torch.cat(original_ids, dim=0)
+    subgraph_list = [_ for _ in part_dict.values()]
+    g = dgl.reorder_graph(g, node_permute_algo='custom', permute_config={'nodes_perm': new_order})
 
 
+else:
+    # Sequantial Partition
+    num_nodes = g.num_nodes()
+    # 每个partition内部的节点数量
+    num_nodes_per_part = 2
+    id_seq = torch.arange(num_nodes)
+    # batches是一个batch list，每一个batch相当于一个partition
+    batches = torch.split(id_seq, num_nodes_per_part)
 
 num_parts = len(batches)
 print("num_parts: {}".format(num_parts))
+
+
+
 
 class SubgraphConstructor(object):
     def __init__(self, g, num_layers):
@@ -188,7 +199,7 @@ def main():
     dataset = batches,
     batch_size=num_partitions_per_it,
     collate_fn = constructor.construct_subgraph,
-    shuffle=True
+    shuffle=SHULFFLE_DATA
     )
 
     best_val_acc = test_acc = 0
@@ -199,8 +210,8 @@ def main():
         hidden_channels=16,
         out_channels=out_size,
         num_layers=num_layers,
-        dropout=0,
-        drop_input=False,
+        dropout=0.5,
+        drop_input=True,
         pool_size=1,  # Number of pinned CPU buffers
         buffer_size=2000,  # Size of pinned CPU buffers (max #out-of-batch nodes)
     ).to(device)
@@ -239,5 +250,49 @@ def main():
         print(prof.key_averages().table(sort_by="cpu_time_total"))
 
 
+def debug():
+    """
+    Initiate a graph with 10 nodes, and 30 edges. 
+    Give random feature to each node, with initiated feature size = 128.
+    """
+
+    # Make use of the pre-defined GCN+GAS model:
+    model = GCN(
+        num_nodes=g.num_nodes(),
+        in_channels=4,
+        hidden_channels=4,
+        out_channels=2,
+        num_layers=3,
+        dropout=0,
+        drop_input=False,
+        pool_size=1,  # Number of pinned CPU buffers
+        buffer_size=2000,  # Size of pinned CPU buffers (max #out-of-batch nodes)
+    ).to(device)
+
+
+    constructor = SubgraphConstructor(g, num_layers)
+    subgraph_loader = DataLoader(
+    dataset = batches,
+    batch_size=num_partitions_per_it,
+    collate_fn = constructor.construct_subgraph,
+    shuffle=SHULFFLE_DATA
+    )
+
+    # Fill the history.
+    block = dgl.to_block(g).to(device)
+    feat = block.srcdata['feat']
+
+    model.eval()
+    model(block, feat)
+
+    for it, blocks in enumerate(subgraph_loader):
+        block = blocks[0]
+        out = model(block, *parse_args_from_block(block, training=True))
+        print(out)
+
+
 if __name__ == '__main__':
-    main()
+    if DEBUG:
+        debug()
+    else:
+        main()

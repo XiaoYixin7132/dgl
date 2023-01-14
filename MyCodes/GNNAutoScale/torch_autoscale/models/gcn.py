@@ -40,7 +40,8 @@ class GCN(ScalableGNN):
                 in_dim = in_channels
             if i == num_layers - 1 and not linear:
                 out_dim = out_channels
-            conv = dglnn.SAGEConv(in_dim, out_dim, aggregator_type='mean')
+            conv = dglnn.GraphConv(in_dim, out_dim)
+            # conv = dglnn.SAGEConv(in_dim, out_dim, aggregator_type='mean')
             self.convs.append(conv)
 
         self.bns = ModuleList()
@@ -115,6 +116,7 @@ class GCN(ScalableGNN):
             if self.residual and h.size(-1) == x.size(-1):
                 h += x[:h.size(0)]
             x = h.relu_()
+            # TODO: 这里调用push_and_pull()函数是怎么知道特征是哪一层的呢
             x = self.push_and_pull(hist, x, *args)
             x = F.dropout(x, p=self.dropout, training=self.training)
         
