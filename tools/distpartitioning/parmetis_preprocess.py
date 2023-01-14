@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow
 import pyarrow.csv as csv
+import pyarrow.parquet as pq
 import torch
 import torch.distributed as dist
 
@@ -19,12 +20,8 @@ def get_proc_info():
     environment when `mpirun` is used to run this python program.
 
     Please note that for mpi(openmpi) installation the rank is retrieved from the
-    environment using OMPI_COMM_WORLD_RANK and for mpi(standard installation) it is
-    retrieved from the environment using MPI_LOCALRANKID.
-
-    For retrieving world_size please use OMPI_COMM_WORLD_SIZE or
-    MPI_WORLDSIZE appropriately as described above to retrieve total no. of
-    processes, when needed.
+    environment using OMPI_COMM_WORLD_RANK. For mpich it is
+    retrieved from the environment using PMI_RANK.
 
     Returns:
     --------
@@ -32,12 +29,14 @@ def get_proc_info():
         Rank of the current process.
     """
     env_variables = dict(os.environ)
-    if "OMPI_COMM_WORLD_RANK" in env_variables:
-        local_rank = int(os.environ.get("OMPI_COMM_WORLD_RANK") or 0)
-    elif "MPI_LOCALRANKID" in env_variables:
-        local_rank = int(os.environ.get("MPI_LOCALRANKID") or 0)
-    return local_rank
-
+    # mpich
+    if "PMI_RANK" in env_variables:
+        return int(env_variables["PMI_RANK"])
+    #openmpi
+    elif "OMPI_COMM_WORLD_RANK" in env_variables:
+        return int(env_variables["OMPI_COMM_WORLD_RANK"])
+    else:
+        return 0
 
 def gen_edge_files(schema_map, output):
     """Function to create edges files to be consumed by ParMETIS
@@ -79,7 +78,8 @@ def gen_edge_files(schema_map, output):
     num_parts = len(schema_map[constants.STR_NUM_EDGES_PER_CHUNK][0])
     for etype_name, etype_info in edge_data.items():
 
-        edge_info = etype_info[constants.STR_DATA]
+        edges_format = etype_info[constants.STR_FORMAT][constants.STR_NAME]
+        edge_data_files = etype_info[constants.STR_DATA]
 
         # ``edgetype`` strings are in canonical format, src_node_type:edge_type:dst_node_type
         tokens = etype_name.split(":")
@@ -89,29 +89,42 @@ def gen_edge_files(schema_map, output):
         rel_name = tokens[1]
         dst_ntype_name = tokens[2]
 
-        data_df = csv.read_csv(
-            edge_info[rank],
-            read_options=pyarrow.csv.ReadOptions(
-                autogenerate_column_names=True
-            ),
-            parse_options=pyarrow.csv.ParseOptions(delimiter=" "),
-        )
-        data_f0 = data_df["f0"].to_numpy()
-        data_f1 = data_df["f1"].to_numpy()
+        def convert_to_numpy_and_write_back(data_df):
+            data_f0 = data_df["f0"].to_numpy()
+            data_f1 = data_df["f1"].to_numpy()
 
-        global_src_id = data_f0 + ntype_gnid_offset[src_ntype_name][0, 0]
-        global_dst_id = data_f1 + ntype_gnid_offset[dst_ntype_name][0, 0]
-        cols = [global_src_id, global_dst_id]
-        col_names = ["global_src_id", "global_dst_id"]
+            global_src_id = data_f0 + ntype_gnid_offset[src_ntype_name][0, 0]
+            global_dst_id = data_f1 + ntype_gnid_offset[dst_ntype_name][0, 0]
+            cols = [global_src_id, global_dst_id]
+            col_names = ["global_src_id", "global_dst_id"]
 
-        out_file = edge_info[rank].split("/")[-1]
-        out_file = os.path.join(outdir, "edges_{}".format(out_file))
-        options = csv.WriteOptions(include_header=False, delimiter=" ")
-        options.delimiter = " "
+            out_file = edge_data_files[rank].split("/")[-1]
+            out_file = os.path.join(outdir, "edges_{}".format(out_file))
 
-        csv.write_csv(
-            pyarrow.Table.from_arrays(cols, names=col_names), out_file, options
-        )
+            # TODO(thvasilo): We should support writing to the same format as the input
+            options = csv.WriteOptions(include_header=False, delimiter=" ")
+            options.delimiter = " "
+            csv.write_csv(
+                pyarrow.Table.from_arrays(cols, names=col_names), out_file, options
+            )
+            return out_file
+
+        if edges_format == constants.STR_CSV:
+            delimiter = etype_info[constants.STR_FORMAT][constants.STR_FORMAT_DELIMITER]
+            data_df = csv.read_csv(
+                edge_data_files[rank],
+                read_options=pyarrow.csv.ReadOptions(
+                    autogenerate_column_names=True
+                ),
+                parse_options=pyarrow.csv.ParseOptions(delimiter=delimiter),
+            )
+        elif edges_format == constants.STR_PARQUET:
+            data_df = pq.read_table(edge_data_files[rank])
+            data_df = data_df.rename_columns(["f0", "f1"])
+        else:
+            raise NotImplementedError(f"Unknown edge format {edges_format}")
+
+        out_file = convert_to_numpy_and_write_back(data_df)
         edge_files.append(out_file)
 
     return edge_files
@@ -279,19 +292,50 @@ def gen_parmetis_input_args(params, schema_map):
     """
 
     num_nodes_per_chunk = schema_map[constants.STR_NUM_NODES_PER_CHUNK]
-    num_parts = len(num_nodes_per_chunk[0])
+    # TODO: This makes the assumption that all node files have the same number of chunks
+    num_node_parts = len(num_nodes_per_chunk[0])
     ntypes_ntypeid_map, ntypes, ntid_ntype_map = get_node_types(schema_map)
     type_nid_dict, ntype_gnid_offset = get_idranges(
         schema_map[constants.STR_NODE_TYPE],
         schema_map[constants.STR_NUM_NODES_PER_CHUNK],
     )
 
+    # Check if <graph-name>_stats.txt exists, if not create one using metadata.
+    # Here stats file will be created in the current directory. 
+    # No. of constraints, third column in the stats file is computed as follows:
+    #   num_constraints = no. of node types + train_mask + test_mask + val_mask
+    #   Here, (train/test/val) masks will be set to 1 if these masks exist for
+    #   all the node types in the graph, otherwise these flags will be set to 0
+    assert constants.STR_GRAPH_NAME in schema_map, "Graph name is not present in the json file"
+    graph_name = schema_map[constants.STR_GRAPH_NAME]
+    if not os.path.isfile(f'{graph_name}_stats.txt'):
+        num_nodes = np.sum(np.concatenate(schema_map[constants.STR_NUM_NODES_PER_CHUNK]))
+        num_edges = np.sum(np.concatenate(schema_map[constants.STR_NUM_EDGES_PER_CHUNK]))
+        num_ntypes = len(schema_map[constants.STR_NODE_TYPE])
+
+        train_mask = test_mask = val_mask = 0
+        node_feats = schema_map[constants.STR_NODE_DATA]
+        for ntype, ntype_data in node_feats.items():
+            if "train_mask" in ntype_data:
+                train_mask += 1
+            if "test_mask" in ntype_data:
+                test_mask += 1
+            if "val_mask" in ntype_data:
+                val_mask += 1
+        train_mask = train_mask // num_ntypes
+        test_mask = test_mask // num_ntypes
+        val_mask = val_mask // num_ntypes
+        num_constraints = num_ntypes + train_mask + test_mask + val_mask
+
+        with open(f'{graph_name}_stats.txt', 'w') as sf:
+            sf.write(f'{num_nodes} {num_edges} {num_constraints}')
+
     node_files = []
     outdir = Path(params.output_dir)
     os.makedirs(outdir, exist_ok=True)
     for ntype_id, ntype_name in ntid_ntype_map.items():
         global_nid_offset = ntype_gnid_offset[ntype_name][0, 0]
-        for r in range(num_parts):
+        for r in range(num_node_parts):
             type_start, type_end = (
                 type_nid_dict[ntype_name][r][0],
                 type_nid_dict[ntype_name][r][1],
@@ -317,9 +361,9 @@ def gen_parmetis_input_args(params, schema_map):
     edge_data = schema_map[constants.STR_EDGES]
     edge_files = []
     for etype_name, etype_info in edge_data.items():
-        edge_info = etype_info[constants.STR_DATA]
-        for r in range(num_parts):
-            out_file = edge_info[r].split("/")[-1]
+        edge_data_files = etype_info[constants.STR_DATA]
+        for edge_file_path in edge_data_files:
+            out_file = os.path.basename(edge_file_path)
             out_file = os.path.join(outdir, "edges_{}".format(out_file))
             edge_files.append(out_file)
 

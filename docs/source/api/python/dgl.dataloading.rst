@@ -26,8 +26,6 @@ DataLoaders
 
     DataLoader
     GraphDataLoader
-    NodeDataLoader
-    EdgeDataLoader
     DistNodeDataLoader
     DistEdgeDataLoader
 
@@ -43,6 +41,7 @@ Samplers
 
     Sampler
     NeighborSampler
+    LaborSampler
     MultiLayerFullNeighborSampler
     ClusterGCNSampler
     ShaDowKHopSampler

@@ -8,8 +8,8 @@ from collections.abc import Mapping
 from . import backend as F
 from . import graph_index, heterograph_index, utils
 from ._ffi.function import _init_api
-from .base import DGLError, dgl_warning
-from .heterograph import DGLHeteroGraph
+from .base import DGLError
+from .heterograph import DGLGraph
 from .utils import context_of, recursive_apply
 
 __all__ = [
@@ -173,7 +173,7 @@ def node_subgraph(
     return subg if output_device is None else subg.to(output_device)
 
 
-DGLHeteroGraph.subgraph = utils.alias_func(node_subgraph)
+DGLGraph.subgraph = utils.alias_func(node_subgraph)
 
 
 def edge_subgraph(
@@ -182,8 +182,7 @@ def edge_subgraph(
     *,
     relabel_nodes=True,
     store_ids=True,
-    output_device=None,
-    **deprecated_kwargs
+    output_device=None
 ):
     """Return a subgraph induced on the given edges.
 
@@ -309,11 +308,6 @@ def edge_subgraph(
     --------
     node_subgraph
     """
-    if len(deprecated_kwargs) != 0:
-        dgl_warning(
-            "Key word argument preserve_nodes is deprecated. Use relabel_nodes instead."
-        )
-        relabel_nodes = not deprecated_kwargs.get("preserve_nodes")
     if graph.is_block and relabel_nodes:
         raise DGLError("Extracting subgraph from a block graph is not allowed.")
     if not isinstance(edges, Mapping):
@@ -346,7 +340,7 @@ def edge_subgraph(
     return subg if output_device is None else subg.to(output_device)
 
 
-DGLHeteroGraph.edge_subgraph = utils.alias_func(edge_subgraph)
+DGLGraph.edge_subgraph = utils.alias_func(edge_subgraph)
 
 
 def in_subgraph(
@@ -484,7 +478,7 @@ def in_subgraph(
     return subg if output_device is None else subg.to(output_device)
 
 
-DGLHeteroGraph.in_subgraph = utils.alias_func(in_subgraph)
+DGLGraph.in_subgraph = utils.alias_func(in_subgraph)
 
 
 def out_subgraph(
@@ -622,7 +616,7 @@ def out_subgraph(
     return subg if output_device is None else subg.to(output_device)
 
 
-DGLHeteroGraph.out_subgraph = utils.alias_func(out_subgraph)
+DGLGraph.out_subgraph = utils.alias_func(out_subgraph)
 
 
 def khop_in_subgraph(
@@ -807,7 +801,7 @@ def khop_in_subgraph(
         return sub_g
 
 
-DGLHeteroGraph.khop_in_subgraph = utils.alias_func(khop_in_subgraph)
+DGLGraph.khop_in_subgraph = utils.alias_func(khop_in_subgraph)
 
 
 def khop_out_subgraph(
@@ -992,7 +986,7 @@ def khop_out_subgraph(
         return sub_g
 
 
-DGLHeteroGraph.khop_out_subgraph = utils.alias_func(khop_out_subgraph)
+DGLGraph.khop_out_subgraph = utils.alias_func(khop_out_subgraph)
 
 
 def node_type_subgraph(graph, ntypes, output_device=None):
@@ -1073,7 +1067,7 @@ def node_type_subgraph(graph, ntypes, output_device=None):
     return edge_type_subgraph(graph, etypes, output_device=output_device)
 
 
-DGLHeteroGraph.node_type_subgraph = utils.alias_func(node_type_subgraph)
+DGLGraph.node_type_subgraph = utils.alias_func(node_type_subgraph)
 
 
 def edge_type_subgraph(graph, etypes, output_device=None):
@@ -1178,13 +1172,13 @@ def edge_type_subgraph(graph, etypes, output_device=None):
         rel_graphs,
         utils.toindex(num_nodes_per_induced_type, "int64"),
     )
-    hg = DGLHeteroGraph(
+    hg = DGLGraph(
         hgidx, induced_ntypes, induced_etypes, node_frames, edge_frames
     )
     return hg if output_device is None else hg.to(output_device)
 
 
-DGLHeteroGraph.edge_type_subgraph = utils.alias_func(edge_type_subgraph)
+DGLGraph.edge_type_subgraph = utils.alias_func(edge_type_subgraph)
 
 #################### Internal functions ####################
 
@@ -1233,7 +1227,7 @@ def _create_hetero_subgraph(
     edge_frames = utils.extract_edge_subframes(
         parent, induced_edges_or_device, store_ids
     )
-    hsg = DGLHeteroGraph(sgi.graph, parent.ntypes, parent.etypes)
+    hsg = DGLGraph(sgi.graph, parent.ntypes, parent.etypes)
     utils.set_new_frames(hsg, node_frames=node_frames, edge_frames=edge_frames)
     return hsg
 

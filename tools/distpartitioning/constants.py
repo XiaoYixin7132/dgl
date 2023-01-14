@@ -25,11 +25,13 @@ STR_EDGE_TYPE = "edge_type"
 STR_NUM_EDGES_PER_CHUNK = "num_edges_per_chunk"
 STR_EDGES = "edges"
 STR_FORMAT = "format"
+STR_FORMAT_DELIMITER = "delimiter"
 STR_DATA = "data"
 STR_NODE_DATA = "node_data"
 STR_EDGE_DATA = "edge_data"
 
 STR_NUMPY = "numpy"
+STR_PARQUET = "parquet"
 STR_CSV = "csv"
 STR_NAME = "name"
 
